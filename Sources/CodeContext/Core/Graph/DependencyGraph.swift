@@ -56,7 +56,7 @@ final class DependencyGraph: @unchecked Sendable {
     }
 
     /// Build edges based on type references within each package.
-    /// Performance: caps file content reads per package.
+    /// Optimized: reads each file once, uses String.contains + word boundary check.
     private func buildTypeReferenceEdges(from parsedFiles: [ParsedFile]) {
         var byPackage: [String: [ParsedFile]] = [:]
         for file in parsedFiles {
@@ -67,9 +67,17 @@ final class DependencyGraph: @unchecked Sendable {
         let totalPackages = byPackage.count
         print("   Scanning type references across \(totalPackages) modules...")
 
+        // Pre-read all file contents in one pass
+        var contentCache: [String: String] = [:]
+        for file in parsedFiles {
+            if let c = try? String(contentsOfFile: file.filePath, encoding: .utf8) {
+                contentCache[file.filePath] = c
+            }
+        }
+        print("   Cached \(contentCache.count) file contents")
+
         for (pkgIdx, (pkgName, packageFiles)) in byPackage.enumerated() {
             let displayName = pkgName == "__app__" ? "App" : pkgName
-            // For very large packages, only process top files by line count
             let cappedFiles: [ParsedFile]
             if packageFiles.count > 200 {
                 cappedFiles = Array(packageFiles.sorted { $0.lineCount > $1.lineCount }.prefix(200))
@@ -88,15 +96,13 @@ final class DependencyGraph: @unchecked Sendable {
             }
             guard !typeToFile.isEmpty else { continue }
 
-            // Limit: skip if too many declarations (would be O(N*M) regex)
             if typeToFile.count > 500 {
-                // Only keep declarations from top-scoring files
                 let topPaths = Set(cappedFiles.prefix(100).map(\.filePath))
                 typeToFile = typeToFile.filter { topPaths.contains($0.path) }
             }
 
             for file in cappedFiles {
-                guard let content = try? String(contentsOfFile: file.filePath, encoding: .utf8) else { continue }
+                guard let content = contentCache[file.filePath] else { continue }
                 for (typeName, declPath) in typeToFile {
                     guard declPath != file.filePath else { continue }
                     if fastContainsType(content, typeName: typeName) {
@@ -105,6 +111,9 @@ final class DependencyGraph: @unchecked Sendable {
                 }
             }
         }
+
+        // Release cache
+        contentCache.removeAll()
     }
 
     /// Fast type-name check using String.range (no regex compilation overhead).
@@ -146,7 +155,7 @@ final class DependencyGraph: @unchecked Sendable {
 
     func analyze() { computePageRank() }
 
-    func computePageRank(damping: Double = 0.85, iterations: Int = 100) {
+    func computePageRank(damping: Double = 0.85, iterations: Int = 20) {
         let n = Double(vertices.count)
         guard n > 0 else { return }
         var scores = Dictionary(uniqueKeysWithValues: vertices.map { ($0, 1.0 / n) })

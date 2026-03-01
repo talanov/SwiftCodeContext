@@ -507,7 +507,7 @@ struct ReportGenerator {
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
-            <title>📊 SwiftCodeContext — \(esc(projectName))</title>
+            <title>🔬 SwiftCodeContext — \(esc(projectName))</title>
             <style>
                 :root { --bg: #f5f5f7; --card: #fff; --border: #e5e5ea; --text: #1d1d1f; --text2: #424245; --text3: #86868b; --accent: #0071e3; --red: #ff3b30; }
                 * { box-sizing: border-box; }
@@ -580,7 +580,7 @@ struct ReportGenerator {
         <body>
         <div class="container">
             <div class="card">
-                <h1>📊 SwiftCodeContext Report — \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
+                <h1>🔬 SwiftCodeContext Report — \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
                 <p class="subtitle">Generated \(Date().formatted()) · <span class="branch-badge">\(esc(branchName))</span> branch</p>
                 <div class="summary-grid">
                     \(!metadata.swiftVersion.isEmpty ? "<div class=\"summary-card\"><div class=\"num\" style=\"font-size:20px\">Swift \(esc(metadata.swiftVersion))</div><div class=\"label\">Language</div></div>" : "")
@@ -666,7 +666,7 @@ struct ReportGenerator {
             """
             }() : "")
             <div class="card">
-                <h2>🔥 Knowledge Hotspots</h2>
+                <h2>🔥 Hot Zones</h2>
                 <p class="subtitle">Files with highest <strong>PageRank</strong> score — the most connected and structurally impactful nodes in the dependency graph. High-scoring files are referenced by many other files and sit at critical junctions in the codebase architecture.</p>
                 <ul class="hotspot-list">\(hotspotRows)</ul>
             </div>

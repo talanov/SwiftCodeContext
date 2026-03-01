@@ -30,7 +30,7 @@ The generated HTML report includes:
 
 4. **🎨 Assets** — media resource analysis showing total size, file count by type, and top 3 heaviest files with their individual sizes
 
-5. **🔥 Knowledge Hotspots** — files with the highest PageRank scores, identifying the most connected and architecturally significant code. Each entry includes clickable module badges for quick navigation and inline documentation previews where available
+5. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code. Each entry includes clickable module badges for quick navigation and inline documentation previews where available
 
 6. **📋 Module Insights** — package penetration analysis showing which modules are imported by the most other packages (foundational dependencies), plus quality metrics including top modules by TODO/FIXME density and technical debt indicators
 

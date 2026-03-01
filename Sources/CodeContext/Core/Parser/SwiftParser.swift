@@ -33,102 +33,96 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
     private static let moduleCacheLock = NSLock()
 
     func parse(file: URL) throws -> ParsedFile {
-        let content = try String(contentsOf: file, encoding: .utf8)
-        let range = NSRange(content.startIndex..., in: content)
-        let lineCount = content.components(separatedBy: "\n").count
-
-        let imports = importPattern.matches(in: content, range: range).compactMap { match -> String? in
-            guard let r = Range(match.range(at: 1), in: content) else { return nil }
-            return String(content[r])
+        let data = try Data(contentsOf: file)
+        guard let content = String(data: data, encoding: .utf8) else {
+            return ParsedFile(filePath: file.path, moduleName: "", imports: [], description: "", lineCount: 0, declarations: [], packageName: "", buildSystem: .unknown, todoCount: 0, fixmeCount: 0, longestFunction: nil)
         }
 
-        let declarations = declarationPattern.matches(in: content, range: range).compactMap { match -> Declaration? in
-            guard let kindRange = Range(match.range(at: 1), in: content),
-                  let nameRange = Range(match.range(at: 2), in: content) else { return nil }
-            let name = String(content[nameRange])
-            // "class func foo()" → kind=class, name=func → skip
-            guard !Declaration.invalidNames.contains(name) else { return nil }
-            guard let kind = Declaration.Kind(rawValue: String(content[kindRange])) else { return nil }
-            return Declaration(name: name, kind: kind)
-        }
-
-        let pathComponents = file.pathComponents
-
-        var moduleName = ""
-        if let sourcesIdx = pathComponents.lastIndex(of: "Sources"),
-           sourcesIdx + 1 < pathComponents.count {
-            moduleName = pathComponents[sourcesIdx + 1]
-        }
-
-        let (packageName, buildSystem) = detectModule(for: file, pathComponents: pathComponents)
-
-        // Doc comments
-        var description = ""
-        if let blockMatch = docCommentBlockPattern.firstMatch(in: content, range: range),
-           let r = Range(blockMatch.range(at: 1), in: content) {
-            description = String(content[r])
-                .components(separatedBy: .newlines)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .map { $0.hasPrefix("*") ? String($0.dropFirst()).trimmingCharacters(in: .whitespaces) : $0 }
-                .filter { !$0.isEmpty }
-                .joined(separator: " ")
-        }
-        if description.isEmpty {
-            let lineMatches = docCommentLinePattern.matches(in: content, range: range)
-            description = lineMatches.prefix(10).compactMap { match -> String? in
-                guard let r = Range(match.range(at: 1), in: content) else { return nil }
-                return String(content[r]).trimmingCharacters(in: .whitespaces)
-            }.filter { !$0.isEmpty }.joined(separator: " ")
-        }
-
-        // TODO / FIXME counts
-        let lines = content.components(separatedBy: "\n")
+        var imports: [String] = []
+        var declarations: [Declaration] = []
+        var lineCount = 0
         var todoCount = 0
         var fixmeCount = 0
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.contains("// TODO") || trimmed.contains("// MARK: TODO") { todoCount += 1 }
-            if trimmed.contains("// FIXME") { fixmeCount += 1 }
-        }
+        var description = ""
+        var docLines: [String] = []
 
-        // Longest function detection (simple brace-counting heuristic)
-        let longestFunc = detectLongestFunction(lines: lines, filePath: file.path)
-
-        return ParsedFile(
-            filePath: file.path, moduleName: moduleName, imports: imports,
-            description: description, lineCount: lineCount,
-            declarations: declarations, packageName: packageName,
-            buildSystem: buildSystem,
-            todoCount: todoCount, fixmeCount: fixmeCount,
-            longestFunction: longestFunc
-        )
-    }
-
-    /// Detect the longest function/method by brace counting.
-    private func detectLongestFunction(lines: [String], filePath: String) -> FunctionInfo? {
-        var best: FunctionInfo?
-        var currentFunc: String?
+        // Longest function tracking
+        var bestFunc: FunctionInfo?
+        var curFuncName: String?
         var funcStartLine = 0
         var braceDepth = 0
         var inFunc = false
 
-        for (i, line) in lines.enumerated() {
+        // Single-pass line scan (like Go version — no regex on hot path)
+        content.enumerateLines { line, _ in
+            lineCount += 1
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            // Detect function start
-            if !inFunc && (trimmed.hasPrefix("func ") || trimmed.hasPrefix("private func ") ||
-                trimmed.hasPrefix("internal func ") || trimmed.hasPrefix("public func ") ||
-                trimmed.hasPrefix("static func ") || trimmed.hasPrefix("override func ") ||
-                trimmed.hasPrefix("@objc func ") || trimmed.hasPrefix("mutating func ") ||
-                trimmed.hasPrefix("class func ") || trimmed.hasPrefix("open func ")) {
-                // Extract function name
-                if let funcRange = trimmed.range(of: "func\\s+(\\w+)", options: .regularExpression) {
-                    let match = trimmed[funcRange]
-                    if let nameRange = match.range(of: "\\w+$", options: .regularExpression) {
-                        currentFunc = String(match[nameRange])
-                        funcStartLine = i
-                        inFunc = true
-                        braceDepth = 0
+            // Imports: "import X" or "import struct X.Y"
+            if trimmed.hasPrefix("import ") {
+                let rest = trimmed.dropFirst(7)
+                let token: Substring
+                // Skip kind keywords: import struct/class/enum/protocol/func/var/let/typealias
+                let parts = rest.split(separator: " ", maxSplits: 1)
+                if parts.count == 2 {
+                    let kw = parts[0]
+                    if kw == "struct" || kw == "class" || kw == "enum" || kw == "protocol" || kw == "func" || kw == "var" || kw == "let" || kw == "typealias" {
+                        token = parts[1]
+                    } else {
+                        token = parts[0]
+                    }
+                } else {
+                    token = rest[...]
+                }
+                let moduleName = token.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." })
+                if !moduleName.isEmpty {
+                    imports.append(String(moduleName))
+                }
+                docLines = []
+                return
+            }
+
+            // Declarations: class/struct/enum/protocol/actor/extension
+            // Strip access modifiers first
+            var declLine = trimmed[...]
+            for prefix in ["public ", "internal ", "private ", "fileprivate ", "open "] {
+                if declLine.hasPrefix(prefix) { declLine = declLine.dropFirst(prefix.count); break }
+            }
+            if declLine.hasPrefix("final ") { declLine = declLine.dropFirst(6) }
+            if declLine.hasPrefix("nonisolated ") { declLine = declLine.dropFirst(12) }
+
+            let declKeywords: [(String, Declaration.Kind)] = [
+                ("class ", .class), ("struct ", .struct), ("enum ", .enum),
+                ("protocol ", .protocol), ("actor ", .actor), ("extension ", .extension),
+            ]
+            for (kw, kind) in declKeywords {
+                if declLine.hasPrefix(kw) {
+                    let rest = declLine.dropFirst(kw.count)
+                    let name = String(rest.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }))
+                    if !name.isEmpty && !Declaration.invalidNames.contains(name) {
+                        declarations.append(Declaration(name: name, kind: kind))
+                        if description.isEmpty && !docLines.isEmpty {
+                            description = docLines.joined(separator: " ")
+                        }
+                    }
+                    break
+                }
+            }
+
+            // Function tracking (for longest function detection)
+            if !inFunc {
+                let hasFuncDecl = trimmed.contains("func ") && !trimmed.hasPrefix("//")
+                if hasFuncDecl {
+                    // Extract func name
+                    if let funcIdx = trimmed.range(of: "func ") {
+                        let after = trimmed[funcIdx.upperBound...]
+                        let name = String(after.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" }))
+                        if !name.isEmpty {
+                            curFuncName = name
+                            funcStartLine = lineCount
+                            inFunc = true
+                            braceDepth = 0
+                        }
                     }
                 }
             }
@@ -139,16 +133,44 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
                     if ch == "}" { braceDepth -= 1 }
                 }
                 if braceDepth <= 0 && trimmed.contains("}") {
-                    let length = i - funcStartLine + 1
-                    if let name = currentFunc, length > (best?.lineCount ?? 0) {
-                        best = FunctionInfo(name: name, lineCount: length, filePath: filePath)
+                    let length = lineCount - funcStartLine + 1
+                    if let name = curFuncName, length > (bestFunc?.lineCount ?? 0) {
+                        bestFunc = FunctionInfo(name: name, lineCount: length, filePath: file.path)
                     }
                     inFunc = false
-                    currentFunc = nil
+                    curFuncName = nil
                 }
             }
+
+            // Doc comments
+            if trimmed.hasPrefix("///") {
+                let doc = trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                docLines.append(doc)
+            } else if !trimmed.isEmpty {
+                docLines = []
+            }
+
+            // TODO / FIXME
+            if trimmed.contains("// TODO") || trimmed.contains("// MARK: TODO") { todoCount += 1 }
+            if trimmed.contains("// FIXME") { fixmeCount += 1 }
         }
-        return best
+
+        let pathComponents = file.pathComponents
+        var moduleName = ""
+        if let sourcesIdx = pathComponents.lastIndex(of: "Sources"),
+           sourcesIdx + 1 < pathComponents.count {
+            moduleName = pathComponents[sourcesIdx + 1]
+        }
+        let (packageName, buildSystem) = detectModule(for: file, pathComponents: pathComponents)
+
+        return ParsedFile(
+            filePath: file.path, moduleName: moduleName, imports: imports,
+            description: description, lineCount: lineCount,
+            declarations: declarations, packageName: packageName,
+            buildSystem: buildSystem,
+            todoCount: todoCount, fixmeCount: fixmeCount,
+            longestFunction: bestFunc
+        )
     }
 
     // MARK: - Module/Package Detection
