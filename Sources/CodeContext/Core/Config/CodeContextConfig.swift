@@ -18,6 +18,8 @@ struct CodeContextConfig: Codable {
     var rateLimit: RateLimitConfig = RateLimitConfig()
     /// File extensions to analyze (Swift-first, but extensible)
     var fileExtensions: [String] = ["swift"]
+    /// Auto-detect mixed ObjC/Swift projects and include .h/.m/.mm
+    var autoDetectObjC: Bool = true
 }
 
 struct AIConfig: Codable {
