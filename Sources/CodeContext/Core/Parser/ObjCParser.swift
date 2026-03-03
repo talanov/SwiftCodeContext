@@ -6,8 +6,15 @@ import Foundation
 /// Lightweight parser for Objective-C .h/.m files.
 final class ObjCParser: LanguageParser, @unchecked Sendable {
 
+    /// #import / #include: group 1 = bracket char (< or "), group 2 = path content
     private let importPattern = try! NSRegularExpression(
-        pattern: #"^\s*(?:#import|#include|@import)\s+[<"]([^>"]+)[>"]"#,
+        pattern: #"^\s*(?:#import|#include)\s+([<"])([^>"]+)[>"]"#,
+        options: .anchorsMatchLines
+    )
+
+    /// @import Module; or @import Module.Submodule;
+    private let moduleImportPattern = try! NSRegularExpression(
+        pattern: #"^\s*@import\s+(\w[\w.]*)\s*;"#,
         options: .anchorsMatchLines
     )
 
@@ -20,10 +27,41 @@ final class ObjCParser: LanguageParser, @unchecked Sendable {
         let content = try String(contentsOf: file, encoding: .utf8)
         let range = NSRange(content.startIndex..., in: content)
 
-        let imports = importPattern.matches(in: content, range: range).compactMap { match -> String? in
+        // #import / #include with <> or ""
+        var imports = importPattern.matches(in: content, range: range).compactMap { match -> String? in
+            guard let bracketRange = Range(match.range(at: 1), in: content),
+                  let pathRange = Range(match.range(at: 2), in: content) else { return nil }
+            let bracket = content[bracketRange]  // "<" for framework, "\"" for local
+            let path = String(content[pathRange]) // e.g. "UIKit/UIKit.h" or "MyClass.h"
+
+            if bracket == "<" {
+                // Framework import: #import <UIKit/UIKit.h> → "UIKit"
+                // Also handles: #import <sqlite3.h> → "sqlite3"
+                if let slashIdx = path.firstIndex(of: "/") {
+                    return String(path[path.startIndex..<slashIdx])
+                }
+                // No slash — bare header like <sqlite3.h>: strip .h
+                return path.hasSuffix(".h") ? String(path.dropLast(2)) : path
+            } else {
+                // Local import: #import "MyClass.h" → "MyClass"
+                //               #import "SDK/Foo.h"  → "Foo" (relative path, resolve by filename)
+                let fileName = path.components(separatedBy: "/").last ?? path
+                if fileName.hasSuffix(".h") {
+                    return String(fileName.dropLast(2))
+                }
+                return fileName
+            }
+        }
+
+        // @import Module; or @import Module.Submodule;
+        let moduleImports = moduleImportPattern.matches(in: content, range: range).compactMap { match -> String? in
             guard let r = Range(match.range(at: 1), in: content) else { return nil }
             return String(content[r])
         }
+        imports.append(contentsOf: moduleImports)
+
+        // Deduplicate: #import <UIKit/UIKit.h> + #import <UIKit/UITableView.h> → one "UIKit"
+        let uniqueImports = Array(Set(imports)).sorted()
 
         let declarations = interfacePattern.matches(in: content, range: range).compactMap { match -> Declaration? in
             guard let r = Range(match.range(at: 1), in: content) else { return nil }
@@ -98,7 +136,7 @@ final class ObjCParser: LanguageParser, @unchecked Sendable {
         }
 
         return ParsedFile(
-            filePath: file.path, moduleName: moduleName, imports: imports,
+            filePath: file.path, moduleName: moduleName, imports: uniqueImports,
             description: "", lineCount: content.components(separatedBy: "\n").count,
             declarations: declarations, packageName: packageName,
             buildSystem: buildSystem,

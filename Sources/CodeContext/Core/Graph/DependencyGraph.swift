@@ -94,9 +94,7 @@ final class DependencyGraph: @unchecked Sendable {
             } else {
                 cappedFiles = packageFiles
             }
-            if packageFiles.count > 20 {
-                print("   [\(pkgIdx+1)/\(totalPackages)] \(displayName): \(packageFiles.count) files")
-            }
+            print("   [\(pkgIdx+1)/\(totalPackages)] \(displayName): \(packageFiles.count) files")
 
             var typeToFile: [(name: String, path: String)] = []
             for file in cappedFiles {
