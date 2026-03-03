@@ -56,14 +56,16 @@ final class ObjCParser: LanguageParser, @unchecked Sendable {
         if packageName.isEmpty {
             let fm = FileManager.default
             var dir = file.deletingLastPathComponent()
-            for _ in 0..<5 {
+            for _ in 0..<10 {
                 let dirName = dir.lastPathComponent
                 guard dirName != "/" && !dirName.isEmpty else { break }
-                if fm.fileExists(atPath: dir.appendingPathComponent(".git").path) ||
-                   fm.fileExists(atPath: dir.appendingPathComponent("Package.swift").path) {
+                let dirPath = dir.path
+                if fm.fileExists(atPath: dirPath + "/.git") ||
+                   fm.fileExists(atPath: dirPath + "/Package.swift") ||
+                   (try? fm.contentsOfDirectory(atPath: dirPath))?.contains(where: { $0.hasSuffix(".xcodeproj") }) == true {
                     break
                 }
-                if fm.fileExists(atPath: dir.appendingPathComponent("\(dirName).h").path) {
+                if fm.fileExists(atPath: dirPath + "/\(dirName).h") {
                     packageName = dirName
                     break
                 }

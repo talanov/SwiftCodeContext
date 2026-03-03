@@ -188,7 +188,7 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
         }
 
         guard let sourcesIdx = pathComponents.lastIndex(of: "Sources"), sourcesIdx > 1 else {
-            return ("", .unknown)
+            return detectUmbrellaHeaderPackage(for: file)
         }
 
         let moduleRootComponents = Array(pathComponents[0..<sourcesIdx])
@@ -234,7 +234,7 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
         let fm = FileManager.default
         var dir = file.deletingLastPathComponent()
 
-        for _ in 0..<5 {
+        for _ in 0..<10 {
             let dirName = dir.lastPathComponent
             guard dirName != "/" && !dirName.isEmpty else { break }
 
@@ -247,13 +247,15 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
             Self.moduleCacheLock.unlock()
 
             // Stop at project root markers
-            if fm.fileExists(atPath: dir.appendingPathComponent(".git").path) ||
-               fm.fileExists(atPath: dir.appendingPathComponent("Package.swift").path) {
+            let dirPath = dir.path
+            if fm.fileExists(atPath: dirPath + "/.git") ||
+               fm.fileExists(atPath: dirPath + "/Package.swift") ||
+               (try? fm.contentsOfDirectory(atPath: dirPath))?.contains(where: { $0.hasSuffix(".xcodeproj") }) == true {
                 break
             }
 
-            let umbrellaHeader = dir.appendingPathComponent("\(dirName).h")
-            if fm.fileExists(atPath: umbrellaHeader.path) {
+            let umbrellaHeader = dirPath + "/\(dirName).h"
+            if fm.fileExists(atPath: umbrellaHeader) {
                 let result = (dirName, BuildSystem.unknown)
                 Self.moduleCacheLock.lock()
                 Self.moduleCache[cacheKey] = result
