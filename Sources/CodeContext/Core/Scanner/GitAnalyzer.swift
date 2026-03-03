@@ -4,6 +4,7 @@ import Foundation
 // MARK: - Author Stats (global, repo-wide)
 
 struct AuthorStats {
+    var displayName: String = ""
     var filesModified: Int = 0
     var totalCommits: Int = 0
     var firstCommitDate: TimeInterval = 0
@@ -32,24 +33,27 @@ struct GitAnalyzer {
         return output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
     }
 
-    /// Global author stats from a single git log call.
+    /// Global author stats from a single git log call. Keyed by email to merge aliases.
     func authorStats() -> [String: AuthorStats] {
         let output = git([
-            "log", "--pretty=format:%an\t%at", "-\(commitLimit)"
+            "log", "--pretty=format:%ae\t%an\t%at", "-\(commitLimit)"
         ])
         guard let output = output else { return [:] }
         var stats: [String: AuthorStats] = [:]
         for line in output.split(separator: "\n") {
-            let parts = line.split(separator: "\t", maxSplits: 1)
-            guard parts.count >= 2 else { continue }
-            let author = String(parts[0])
-            let ts = TimeInterval(parts[1]) ?? 0
+            let parts = line.split(separator: "\t", maxSplits: 2)
+            guard parts.count >= 3 else { continue }
+            let email = String(parts[0])
+            let name = String(parts[1])
+            let ts = TimeInterval(parts[2]) ?? 0
             guard ts > 0 else { continue }
-            var s = stats[author, default: AuthorStats()]
+            var s = stats[email, default: AuthorStats()]
             s.totalCommits += 1
             if s.firstCommitDate == 0 || ts < s.firstCommitDate { s.firstCommitDate = ts }
-            if ts > s.lastCommitDate { s.lastCommitDate = ts }
-            stats[author] = s
+            // Keep the most recent name as display name
+            if ts > s.lastCommitDate { s.lastCommitDate = ts; s.displayName = name }
+            if s.displayName.isEmpty { s.displayName = name }
+            stats[email] = s
         }
         return stats
     }
@@ -120,7 +124,7 @@ struct GitAnalyzer {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = [
             "log",
-            "--pretty=format:__COMMIT__%n%an%n%at%n%s",
+            "--pretty=format:__COMMIT__%n%ae%n%at%n%s",
             "--name-only",
             "-\(commitLimit)"
         ]

@@ -238,7 +238,8 @@ struct ReportGenerator {
         let teamRows = topTeam.map { (author, info) -> String in
             let first = info.firstCommitDate > 0 ? dateFmt.string(from: Date(timeIntervalSince1970: info.firstCommitDate)) : "—"
             let last = info.lastCommitDate > 0 ? dateFmt.string(from: Date(timeIntervalSince1970: info.lastCommitDate)) : "—"
-            return "<tr><td>\(esc(author))</td><td>\(info.filesModified)</td><td>\(info.totalCommits)</td><td>\(first)</td><td>\(last)</td></tr>"
+            let name = info.displayName.isEmpty ? author : info.displayName
+            return "<tr><td>\(esc(name))</td><td>\(info.filesModified)</td><td>\(info.totalCommits)</td><td>\(first)</td><td>\(last)</td></tr>"
         }.joined(separator: "\n")
 
         // ─── 2. Imports ───
