@@ -228,7 +228,13 @@ struct ReportGenerator {
         print("   Generating HTML sections...")
 
         // ─── 1. Team ───
-        let topTeam = authorStats.sorted { $0.value.filesModified > $1.value.filesModified }.prefix(15)
+        let topTeam = authorStats.sorted {
+            // Primary: total commits, secondary: files modified
+            if $0.value.totalCommits != $1.value.totalCommits {
+                return $0.value.totalCommits > $1.value.totalCommits
+            }
+            return $0.value.filesModified > $1.value.filesModified
+        }.prefix(15)
         let teamRows = topTeam.map { (author, info) -> String in
             let first = info.firstCommitDate > 0 ? dateFmt.string(from: Date(timeIntervalSince1970: info.firstCommitDate)) : "—"
             let last = info.lastCommitDate > 0 ? dateFmt.string(from: Date(timeIntervalSince1970: info.lastCommitDate)) : "—"

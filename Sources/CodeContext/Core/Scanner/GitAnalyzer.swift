@@ -55,11 +55,12 @@ struct GitAnalyzer {
     }
 
     /// Batch-enrich files with git metadata using ONE git log call.
-    func analyze(files: [ParsedFile]) -> [ParsedFile] {
+    /// Returns enriched files and accurate per-author filesModified counts.
+    func analyze(files: [ParsedFile]) -> (files: [ParsedFile], authorFileCounts: [String: Int]) {
         let gitDir = URL(fileURLWithPath: repoPath).appendingPathComponent(".git")
         guard FileManager.default.fileExists(atPath: gitDir.path) else {
             print("⚠️  No .git directory found. Skipping Git analysis.")
-            return files
+            return (files, [:])
         }
 
         let total = files.count
@@ -71,6 +72,15 @@ struct GitAnalyzer {
 
         let elapsed1 = CFAbsoluteTimeGetCurrent() - startTime
         print("   Batch git log parsed in \(String(format: "%.1f", elapsed1))s (\(batchStats.count) file entries)")
+
+        // Accurate filesModified: count every file each author touched (not capped to top 3)
+        let filePaths = Set(files.map { relativePath(for: $0.filePath) })
+        var authorFileCounts: [String: Int] = [:]
+        for (path, fs) in batchStats where filePaths.contains(path) {
+            for author in fs.authorCounts.keys {
+                authorFileCounts[author, default: 0] += 1
+            }
+        }
 
         // Enrich files
         var results: [ParsedFile] = []
@@ -97,7 +107,7 @@ struct GitAnalyzer {
 
         let elapsed2 = CFAbsoluteTimeGetCurrent() - startTime
         print("   Git analysis complete in \(String(format: "%.1f", elapsed2))s")
-        return results
+        return (results, authorFileCounts)
     }
 
     // MARK: - Batch Collection
