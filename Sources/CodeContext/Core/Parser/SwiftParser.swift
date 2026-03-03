@@ -53,6 +53,9 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
         var braceDepth = 0
         var inFunc = false
 
+        // Scope depth for filtering nested declarations (enum CodingKeys inside extensions, etc.)
+        var scopeDepth = 0
+
         // Single-pass line scan (like Go version — no regex on hot path)
         content.enumerateLines { line, _ in
             lineCount += 1
@@ -99,7 +102,9 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
                 if declLine.hasPrefix(kw) {
                     let rest = declLine.dropFirst(kw.count)
                     let name = String(rest.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }))
-                    if !name.isEmpty && !Declaration.invalidNames.contains(name) {
+                    // Only register top-level declarations (scopeDepth == 0)
+                    // Skips nested types like enum CodingKeys inside extensions
+                    if !name.isEmpty && !Declaration.invalidNames.contains(name) && scopeDepth == 0 {
                         declarations.append(Declaration(name: name, kind: kind))
                         if description.isEmpty && !docLines.isEmpty {
                             description = docLines.joined(separator: " ")
@@ -107,6 +112,15 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
                     }
                     break
                 }
+            }
+
+            // Update scope depth (track braces for nested declaration filtering)
+            if !trimmed.hasPrefix("//") {
+                for ch in trimmed {
+                    if ch == "{" { scopeDepth += 1 }
+                    else if ch == "}" { scopeDepth -= 1 }
+                }
+                if scopeDepth < 0 { scopeDepth = 0 }
             }
 
             // Function tracking (for longest function detection)
