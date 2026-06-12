@@ -32,6 +32,14 @@ struct CodebaseContext {
     let totalFiles: Int
     let languages: [String]
     let hotspots: [String]
+    var files: [FileDigest] = []
+}
+
+struct FileDigest {
+    let path: String
+    let absolutePath: String
+    let types: [String]
+    let lineCount: Int
 }
 
 // MARK: - AI Code Analyzer
@@ -125,6 +133,60 @@ final class AICodeAnalyzer: Sendable {
         return parseConversation(response: response)
     }
 
+    // MARK: - Deep (agentic) Q&A
+
+    func askQuestionDeep(
+        _ question: String,
+        context: CodebaseContext,
+        onProgress: @Sendable (String) -> Void = { _ in }
+    ) async throws -> AIConversationResponse {
+        onProgress("selecting relevant files…")
+        let selected = try await selectFiles(question: question, context: context)
+        guard !selected.isEmpty else {
+            onProgress("no selection — falling back to one-shot")
+            return try await askQuestion(question, context: context)
+        }
+        onProgress("reading \(selected.count) files: \(selected.map(\.path).joined(separator: ", "))")
+
+        let evidence = buildEvidence(files: selected, question: question)
+        let prompt = buildDeepAnswerPrompt(question: question, evidence: evidence)
+        let response = try await callAI(prompt: prompt)
+        return parseConversation(response: response)
+    }
+
+    private func selectFiles(question: String, context: CodebaseContext) async throws -> [FileDigest] {
+        let prompt = """
+        You're locating code in a Swift codebase. From the repo map, pick the files
+        whose contents are most likely needed to answer the question. Choose up to 8,
+        most relevant first. Copy paths exactly as written; do not invent paths.
+
+        REPO MAP (path — declared types, ranked by importance):
+        \(renderRepoMap(context, budget: 14000))
+        QUESTION: "\(question)"
+
+        Respond ONLY with JSON: {"files":["path/one.swift","path/two.swift"]}
+        """
+        let response = try await callAI(prompt: prompt)
+        let requested = parseFileList(response)
+
+        let byPath = Dictionary(context.files.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
+        var matched: [FileDigest] = []
+        var seen = Set<String>()
+        for req in requested {
+            let hit = byPath[req] ?? context.files.first { $0.path.hasSuffix("/" + req) || $0.path.hasSuffix(req) }
+            if let hit, seen.insert(hit.path).inserted { matched.append(hit) }
+        }
+        return Array(matched.prefix(12))
+    }
+
+    private func parseFileList(_ response: String) -> [String] {
+        guard let json = extractJSON(from: response),
+              let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let files = obj["files"] as? [String] else { return [] }
+        return files
+    }
+
     // MARK: - AI Calls (URLSession — Apple native)
 
     private func callAI(prompt: String) async throws -> String {
@@ -203,8 +265,7 @@ final class AICodeAnalyzer: Sendable {
 
     // MARK: - GitHub Copilot (OpenAI-compatible chat completions)
 
-    /// Live model catalog from the Copilot `/models` endpoint — never hardcoded,
-    /// so it tracks whatever the account/org has enabled.
+    /// Live model catalog from the Copilot `/models` endpoint.
     func listCopilotModels() async throws -> [String] {
         let request = try await copilotRequest(path: "/models", method: "GET")
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -289,14 +350,110 @@ final class AICodeAnalyzer: Sendable {
         """
     }
 
-    private func buildConversationPrompt(question: String, context: CodebaseContext) -> String {
-        let hotspotNames = context.hotspots.prefix(5).map { URL(fileURLWithPath: $0).lastPathComponent }
+    private func renderRepoMap(_ context: CodebaseContext, budget: Int) -> String {
+        var map = ""
+        var shown = 0
+        for file in context.files {
+            let types = file.types.prefix(8).joined(separator: ", ")
+            let line = types.isEmpty
+                ? "\(file.path) (\(file.lineCount) loc)\n"
+                : "\(file.path) — \(types) (\(file.lineCount) loc)\n"
+            if map.count + line.count > budget { break }
+            map += line
+            shown += 1
+        }
+        if shown < context.files.count {
+            map += "…and \(context.files.count - shown) more files (omitted, ranked lower).\n"
+        }
+        return map
+    }
+
+    // MARK: - Evidence Extraction
+
+    private static let stopWords: Set<String> = [
+        "the", "and", "for", "what", "where", "which", "how", "does", "this", "that",
+        "with", "from", "into", "are", "is", "was", "were", "has", "have", "can",
+        "would", "should", "could", "will", "about", "code", "file", "files", "swift",
+    ]
+
+    private func keywords(from question: String) -> [String] {
+        let tokens = question.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count > 3 && !Self.stopWords.contains($0) }
+        return Array(Set(tokens))
+    }
+
+    private func buildEvidence(files: [FileDigest], question: String) -> String {
+        let keys = keywords(from: question)
+        let signaturePrefixes = [
+            "func ", "class ", "struct ", "enum ", "protocol ", "actor ",
+            "extension ", "init", "case ", "@",
+        ]
+        let globalBudget = 16000
+        let perFileLineCap = 70
+        var out = ""
+
+        for file in files {
+            guard out.count < globalBudget,
+                  let content = try? String(contentsOfFile: file.absolutePath, encoding: .utf8)
+            else { continue }
+            let lines = content.components(separatedBy: "\n")
+
+            var keep = Set<Int>()
+            for (i, line) in lines.enumerated() {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                let isSignature = signaturePrefixes.contains { trimmed.hasPrefix($0) }
+                let matchesKeyword = keys.contains { line.range(of: $0, options: .caseInsensitive) != nil }
+                if isSignature || matchesKeyword {
+                    if matchesKeyword {
+                        for j in max(0, i - 3)...min(lines.count - 1, i + 3) { keep.insert(j) }
+                    } else {
+                        keep.insert(i)
+                    }
+                }
+            }
+
+            guard !keep.isEmpty else { continue }
+            out += "\n// ===== \(file.path) =====\n"
+            var lastShown = -2
+            var emitted = 0
+            for idx in keep.sorted() {
+                if emitted >= perFileLineCap || out.count > globalBudget { out += "…\n"; break }
+                if idx > lastShown + 1 { out += "…\n" }
+                out += lines[idx] + "\n"
+                lastShown = idx
+                emitted += 1
+            }
+        }
+        return out.isEmpty ? "[no matching lines extracted]" : out
+    }
+
+    private func buildDeepAnswerPrompt(question: String, evidence: String) -> String {
         return """
-        You're an expert guide for this Swift codebase.
+        You're an expert guide for this Swift codebase. Below are excerpts (signatures
+        and question-relevant lines) from the most relevant files. Answer from this
+        evidence; cite the file paths shown in the // ===== headers. Say so if the
+        evidence is insufficient rather than guessing.
+
+        EVIDENCE:
+        \(evidence)
+
+        QUESTION: "\(question)"
+
+        Respond with JSON:
+        {"answer":"...","suggestedFiles":[],"confidence":0.0-1.0}
+        """
+    }
+
+    private func buildConversationPrompt(question: String, context: CodebaseContext) -> String {
+        return """
+        You're an expert guide for this Swift codebase. Use the repo map below to
+        locate code. Cite concrete file paths from the map; don't invent paths.
 
         CODEBASE: \(context.totalFiles) files, Languages: \(context.languages.joined(separator: ", "))
-        Top hotspots: \(hotspotNames.joined(separator: ", "))
 
+        REPO MAP (path — declared types, ranked by importance):
+        \(renderRepoMap(context, budget: 12000))
         QUESTION: "\(question)"
 
         Respond with JSON:
@@ -346,8 +503,7 @@ final class AICodeAnalyzer: Sendable {
 
 // MARK: - Copilot Token Provider
 
-/// Exchanges a GitHub token for a short-lived Copilot session token, cached
-/// across the parallel `batchAnalyze` calls.
+/// Exchanges a GitHub token for a short-lived Copilot session token, cached across calls.
 private actor CopilotTokenProvider {
     private var cached: (token: String, expiresAt: Date)?
 

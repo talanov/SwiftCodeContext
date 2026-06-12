@@ -16,6 +16,9 @@ struct AskCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Path to the repository")
     var path: String = "."
 
+    @Flag(name: .long, help: "Agentic retrieval: let the model pick files and read their contents (slower, sharper)")
+    var deep: Bool = false
+
     func run() async throws {
         let config = ConfigLoader.load()
 
@@ -30,10 +33,26 @@ struct AskCommand: AsyncParsableCommand {
         let result = try await AnalysisPipeline.run(path: path, config: config)
 
         let hotspots = result.graph.getTopHotspots(limit: 10).map(\.path)
+
+        let root = URL(fileURLWithPath: path).standardizedFileURL.path
+        let files = result.parsedFiles
+            .sorted { (result.graph.pageRankScores[$0.filePath] ?? 0) > (result.graph.pageRankScores[$1.filePath] ?? 0) }
+            .map { file in
+                FileDigest(
+                    path: file.filePath.hasPrefix(root + "/")
+                        ? String(file.filePath.dropFirst(root.count + 1))
+                        : file.filePath,
+                    absolutePath: file.filePath,
+                    types: file.declarations.map(\.name),
+                    lineCount: file.lineCount
+                )
+            }
+
         let context = CodebaseContext(
             totalFiles: result.parsedFiles.count,
             languages: ["Swift"],
-            hotspots: hotspots
+            hotspots: hotspots,
+            files: files
         )
 
         let aiAnalyzer = AICodeAnalyzer(
@@ -44,7 +63,9 @@ struct AskCommand: AsyncParsableCommand {
             tokenURL: config.ai.tokenURL
         )
 
-        let response = try await aiAnalyzer.askQuestion(question, context: context)
+        let response = deep
+            ? try await aiAnalyzer.askQuestionDeep(question, context: context) { print("   ↳ \($0)") }
+            : try await aiAnalyzer.askQuestion(question, context: context)
 
         print("\n💡 \(response.answer)\n")
 
