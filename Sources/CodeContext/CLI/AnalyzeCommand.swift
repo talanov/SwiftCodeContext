@@ -149,7 +149,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
             let aiAnalyzer = AICodeAnalyzer(
                 apiKey: config.ai.apiKey,
                 model: config.ai.model,
-                provider: config.ai.provider
+                provider: config.ai.provider,
+                baseURL: config.ai.baseURL,
+                tokenURL: config.ai.tokenURL
             )
             if aiAnalyzer.isConfigured {
                 let insights = await aiAnalyzer.batchAnalyze(

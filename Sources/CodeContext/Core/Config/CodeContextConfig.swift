@@ -42,9 +42,12 @@ struct CodeContextConfig: Codable {
 
 struct AIConfig: Codable {
     var enabled: Bool = false
-    var provider: String = "anthropic"  // "anthropic" or "gemini"
+    var provider: String = "anthropic"  // "anthropic", "gemini", or "copilot"
     var apiKey: String = ""
     var model: String = "claude-sonnet-4-20250514"
+    /// Copilot host overrides; empty = github.com defaults
+    var baseURL: String = ""
+    var tokenURL: String = ""
 }
 
 struct RateLimitConfig: Codable {

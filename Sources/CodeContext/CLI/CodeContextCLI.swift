@@ -19,6 +19,7 @@ struct CodeContextCLI: AsyncParsableCommand {
         subcommands: [
             AnalyzeCommand.self,
             AskCommand.self,
+            ModelsCommand.self,
             EvolutionCommand.self,
             InitCommand.self,
         ],

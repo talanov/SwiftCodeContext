@@ -37,20 +37,31 @@ struct CodebaseContext {
 // MARK: - AI Code Analyzer
 
 /// AI-powered code analysis using URLSession (Apple-native networking).
-/// Supports Anthropic Claude and Google Gemini.
+/// Supports Anthropic Claude, Google Gemini, and GitHub Copilot Enterprise.
 final class AICodeAnalyzer: Sendable {
     let apiKey: String
     let model: String
     let provider: String
+    let baseURL: String
+    let tokenURL: String
+    private let copilotToken = CopilotTokenProvider()
 
     var isConfigured: Bool {
         !apiKey.isEmpty && apiKey != "heuristic" && !apiKey.hasPrefix("demo")
     }
 
-    init(apiKey: String, model: String = "claude-sonnet-4-20250514", provider: String = "anthropic") {
+    init(
+        apiKey: String,
+        model: String = "claude-sonnet-4-20250514",
+        provider: String = "anthropic",
+        baseURL: String = "",
+        tokenURL: String = ""
+    ) {
         self.apiKey = apiKey
         self.model = model
         self.provider = provider
+        self.baseURL = baseURL
+        self.tokenURL = tokenURL
     }
 
     // MARK: - Public API
@@ -122,6 +133,8 @@ final class AICodeAnalyzer: Sendable {
             return try await callClaude(prompt: prompt)
         case "gemini":
             return try await callGemini(prompt: prompt)
+        case "copilot", "github", "github-copilot":
+            return try await callCopilot(prompt: prompt)
         default:
             throw CodeContextError.aiProvider("Unsupported provider: \(provider)")
         }
@@ -186,6 +199,68 @@ final class AICodeAnalyzer: Sendable {
             throw CodeContextError.aiProvider("Invalid Gemini response format")
         }
         return text
+    }
+
+    // MARK: - GitHub Copilot (OpenAI-compatible chat completions)
+
+    /// Live model catalog from the Copilot `/models` endpoint — never hardcoded,
+    /// so it tracks whatever the account/org has enabled.
+    func listCopilotModels() async throws -> [String] {
+        let request = try await copilotRequest(path: "/models", method: "GET")
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let body = String(data: data, encoding: .utf8) ?? "unknown"
+            throw CodeContextError.aiProvider("Copilot models error: \(body)")
+        }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let models = json?["data"] as? [[String: Any]] else {
+            throw CodeContextError.aiProvider("Invalid Copilot models response")
+        }
+        return models.compactMap { $0["id"] as? String }.sorted()
+    }
+
+    private func callCopilot(prompt: String) async throws -> String {
+        var request = try await copilotRequest(path: "/chat/completions", method: "POST")
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": 1000,
+            "messages": [["role": "user", "content": prompt]]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let body = String(data: data, encoding: .utf8) ?? "unknown"
+            throw CodeContextError.aiProvider("Copilot API error: \(body)")
+        }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let choices = json?["choices"] as? [[String: Any]]
+        let message = choices?.first?["message"] as? [String: Any]
+        guard let text = message?["content"] as? String else {
+            throw CodeContextError.aiProvider("Invalid Copilot response format")
+        }
+        return text
+    }
+
+    private func copilotRequest(path: String, method: String) async throws -> URLRequest {
+        let bearer = try await copilotToken.bearer(githubToken: apiKey, tokenURL: tokenURL)
+        let host = baseURL.isEmpty ? "https://api.githubcopilot.com" : baseURL.trimmingTrailingSlash
+        guard let url = URL(string: host + path) else {
+            throw CodeContextError.aiProvider("Invalid Copilot baseURL: \(host)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        request.setValue("ArchSwiftScope/1.0", forHTTPHeaderField: "Editor-Version")
+        request.setValue("ArchSwiftScope/1.0", forHTTPHeaderField: "Editor-Plugin-Version")
+        request.setValue("vscode-chat", forHTTPHeaderField: "Copilot-Integration-Id")
+        return request
     }
 
     // MARK: - Prompt Builders
@@ -266,5 +341,58 @@ final class AICodeAnalyzer: Sendable {
         guard let start = text.firstIndex(of: "{"),
               let end = text.lastIndex(of: "}") else { return nil }
         return String(text[start...end])
+    }
+}
+
+// MARK: - Copilot Token Provider
+
+/// Exchanges a GitHub token for a short-lived Copilot session token, cached
+/// across the parallel `batchAnalyze` calls.
+private actor CopilotTokenProvider {
+    private var cached: (token: String, expiresAt: Date)?
+
+    func bearer(githubToken: String, tokenURL: String) async throws -> String {
+        if githubToken.contains("tid=") { return githubToken }
+
+        if let cached, cached.expiresAt > Date().addingTimeInterval(60) {
+            return cached.token
+        }
+
+        let endpoint = tokenURL.isEmpty
+            ? "https://api.github.com/copilot_internal/v2/token"
+            : tokenURL
+        guard let url = URL(string: endpoint) else {
+            throw CodeContextError.aiProvider("Invalid Copilot tokenURL: \(endpoint)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("token \(githubToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("ArchSwiftScope/1.0", forHTTPHeaderField: "Editor-Version")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let body = String(data: data, encoding: .utf8) ?? "unknown"
+            throw CodeContextError.aiProvider(
+                "Copilot token exchange failed (ai.apiKey must be a GitHub token with Copilot access): \(body)"
+            )
+        }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let token = json?["token"] as? String else {
+            throw CodeContextError.aiProvider("Invalid Copilot token response")
+        }
+        let expiry = (json?["expires_at"] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
+            ?? Date().addingTimeInterval(300)
+        cached = (token, expiry)
+        return token
+    }
+}
+
+private extension String {
+    var trimmingTrailingSlash: String {
+        hasSuffix("/") ? String(dropLast()) : self
     }
 }

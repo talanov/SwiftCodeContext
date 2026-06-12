@@ -39,7 +39,9 @@ struct AskCommand: AsyncParsableCommand {
         let aiAnalyzer = AICodeAnalyzer(
             apiKey: config.ai.apiKey,
             model: config.ai.model,
-            provider: config.ai.provider
+            provider: config.ai.provider,
+            baseURL: config.ai.baseURL,
+            tokenURL: config.ai.tokenURL
         )
 
         let response = try await aiAnalyzer.askQuestion(question, context: context)

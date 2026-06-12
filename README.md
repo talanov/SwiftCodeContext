@@ -272,6 +272,51 @@ Add an `ai` block to your `.codecontext.json`:
 | -------- | ---------- | -------------- |
 | Anthropic Claude | `"anthropic"` | `claude-sonnet-4-20250514` |
 | Google Gemini | `"gemini"` | `gemini-2.5-flash` |
+| GitHub Copilot | `"copilot"` | run `codecontext models` |
+
+#### GitHub Copilot
+
+Works with any github.com Copilot plan (Individual / Pro / Business / Enterprise).
+Set `provider` to `"copilot"` and put a **GitHub token with Copilot access** (PAT or
+OAuth token) in `apiKey` — the tool exchanges it for a short-lived Copilot session
+token automatically and talks to the OpenAI-compatible chat-completions endpoint.
+
+```json
+{
+    "ai": {
+        "enabled": true,
+        "provider": "copilot",
+        "apiKey": "ghp_your_github_token_with_copilot_access",
+        "model": "gpt-4o"
+    }
+}
+```
+
+If your organization is on a GitHub Enterprise Cloud / data-residency host, override
+the endpoints (otherwise leave them out to use github.com):
+
+```json
+{
+    "ai": {
+        "enabled": true,
+        "provider": "copilot",
+        "apiKey": "ghp_...",
+        "model": "claude-3.5-sonnet",
+        "baseURL": "https://api.githubcopilot.com",
+        "tokenURL": "https://api.github.com/copilot_internal/v2/token"
+    }
+}
+```
+
+> Already holding a Copilot session token (one containing `tid=`)? Drop it straight
+> into `apiKey` and the token exchange is skipped.
+
+The model list isn't hardcoded — it's fetched live from Copilot's `/models` endpoint,
+so it always reflects what your account/org has enabled. List what you can use:
+
+```bash
+codecontext models
+```
 
 ### Ask Questions
 
